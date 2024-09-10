@@ -1,0 +1,80 @@
+import torch
+from torch import nn
+import zhconv
+
+from pretrained_pipeline.processor.tokenizer.nezha import SentenceTokenizer
+from pretrained_pipeline.factory.task.cls_task.sentence_cls_task import SentenceCLSTask, logging
+from pretrained_pipeline.model.text_cls.bert_model import BertClsModel, BertAttClsModel
+
+from pretrained_pipeline.factory.untils.tools import seed_torch
+from pretrained_pipeline.factory.untils.opt import get_default_bert_optimizer
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(device)
+
+
+class Config:
+    seed = 42
+    max_sen_len = 64
+    train_batch_size = 8
+    val_batch_size = 8
+    bert_pretrained_name = 'model/chinese-roberta-wwm-ext'
+    pre_model_type = None
+    multi_gpu = False
+    params_path = './'
+    n_classes = 19
+    cuda_device = 0
+
+    trained_model_path = './checkpoints/roberta_0531.pth'
+    # 训练模型参数
+    num_workers = 0
+    n_epoch = 8
+    min_store_epoch = 2
+    scheduler_type = 'get_linear_schedule_with_warmup'  # get_linear_schedule_with_warmup
+    # trick 参数
+    attack_func = None  # fgm  pgd
+    pgd_k = 3
+    is_use_rdrop = True
+    alpha = 0.25  # ghmloss
+    is_use_swa = False
+    ema_decay = 0.99  # 0.995
+    rdrop_ismean = False
+
+
+categories = ['保险', '储蓄', '其它', '创业', '基金', '外汇', '房产', '数字货币', '泛财经', '留学', '移民', '税务', '美女',
+              '股票-其他', '股票-基本面分析', '股票-技术面分析', '股票-行业分析', '财经段子', '鸡汤']
+id2cat = dict(zip(range(len(categories)), categories))
+
+config = Config()
+config.pre_model_type = config.bert_pretrained_name.split('/')[-1]
+seed_torch(config.seed)
+
+tokenizer = SentenceTokenizer(config.bert_pretrained_name, config.max_sen_len)
+model = BertClsModel(config)
+model.load(config.trained_model_path, device)
+optimizer = get_default_bert_optimizer(model, lr=2e-5)
+loss_func = nn.CrossEntropyLoss()
+task = SentenceCLSTask(model, optimizer, loss_func, config)
+
+# sentence = "五条短线操盘策略，听懂点赞#财经 #干货分享 #财经知识"
+# sentence = "1分鐘系列 - 看懂損益表 10個財務比率，算出公司內在價值。"
+sentence = "黃國英：我不相信nft ！"
+sentence = zhconv.convert(sentence, 'zh-cn')
+sentence = sentence.lower().strip()
+encoding = tokenizer.sequence_to_ids(sentence)
+feature = {
+    'input_ids': encoding['input_ids'].flatten(),
+    'attention_mask': encoding['attention_mask'].flatten(),
+    'ori_text': sentence
+}
+input_ids = feature["input_ids"].to(task.device)
+attention_mask = feature["attention_mask"].to(task.device)
+input_ids = input_ids[None, :]
+attention_mask = attention_mask[None, :]
+outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+outputs = torch.softmax(outputs, dim=0)
+score, pred = torch.max(outputs, dim=0)
+pred_label = id2cat[int(pred)]
+score = round(float(score), 3)
+print(pred_label)
+print(score)
